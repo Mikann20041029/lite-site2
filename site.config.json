@@ -1,0 +1,10 @@
+{
+  "site_title": "One-Shot Lite RSS Digest",
+  "site_description": "A tiny static site generated from RSS feeds (trial).",
+  "base_url": "",
+  "max_items_per_feed": 15,
+  "feeds": [
+    "https://hnrss.org/frontpage",
+    "https://www.reddit.com/r/programming/.rss"
+  ]
+}
