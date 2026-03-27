@@ -2,14 +2,13 @@
 Upwork Job Scraper — main orchestrator.
 
 Flow:
-  1. Scrape Upwork search results (Playwright, logged-in)
+  1. Scrape Upwork RSS feeds (no login, no browser needed)
   2. Filter out already-seen jobs (SQLite)
   3. Score each new job (rule-based)
   4. Generate proposal drafts for top jobs (DeepSeek API)
   5. Save to DB
   6. Send Discord notification with top jobs
 """
-import asyncio
 import sys
 from datetime import datetime
 
@@ -25,13 +24,9 @@ def run() -> None:
     # 1. Init DB
     db.init_db()
 
-    # 2. Scrape Upwork
-    print("[1/5] Scraping Upwork...")
-    try:
-        raw_jobs = asyncio.run(scraper.scrape_all())
-    except RuntimeError as e:
-        print(f"[FATAL] Scraper failed: {e}", file=sys.stderr)
-        sys.exit(1)
+    # 2. Scrape Upwork via RSS
+    print("[1/5] Scraping Upwork RSS feeds...")
+    raw_jobs = scraper.scrape_all()
     print(f"  Total jobs scraped: {len(raw_jobs)}")
 
     # 3. Filter already-seen jobs
