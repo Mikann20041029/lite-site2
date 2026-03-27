@@ -15,7 +15,7 @@ from .config import (
     UPWORK_PASSWORD,
 )
 
-# ── selectors (update here if Upwork changes HTML) ──────────────────────────
+# ── selectors (update here if Upwork changes HTML) ─────────────────────────
 SEL_JOB_TILE = "article[data-test='JobTile'], div[data-test='job-tile'], section.up-card-section"
 SEL_TITLE_LINK = "a[data-test='job-title-link'], h2 a, .job-title a"
 SEL_DESCRIPTION = "[data-test='job-description-text'], .job-description, p.description"
@@ -89,42 +89,162 @@ async def _extract_job(card) -> dict | None:
         return None
 
 
+async def _first_visible(page: Page, selectors: list[str], timeout: int = 2500):
+    """Return the first visible locator from the list, or None."""
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            await loc.wait_for(state="visible", timeout=timeout)
+            return loc, sel
+        except Exception:
+            pass
+    return None, None
+
+
 async def _login(page: Page) -> bool:
-    """Perform Upwork login. Returns True on success."""
+    """
+    Robust Upwork login that tries multiple selectors and saves
+    debug screenshots on failure.
+    """
     print("  Navigating to Upwork login...")
-    await page.goto("https://www.upwork.com/login", wait_until="domcontentloaded", timeout=30000)
-    await page.wait_for_timeout(2000)
+    await page.goto(
+        "https://www.upwork.com/ab/account-security/login",
+        wait_until="domcontentloaded",
+        timeout=30000,
+    )
+    await page.wait_for_timeout(2500)
 
-    # Step 1: email
-    try:
-        email_input = await page.wait_for_selector(
-            'input[name="login[username]"], input[type="email"], #login_username',
-            timeout=8000,
+    EMAIL_SELECTORS = [
+        'input[type="email"]',
+        'input[name="login[username]"]',
+        "#login_username",
+        'input[name*="username"]',
+        'input[id*="username"]',
+        'input[autocomplete="username"]',
+        'input[placeholder*="email" i]',
+        'input[aria-label*="email" i]',
+    ]
+
+    PRE_LOGIN_BTNS = [
+        'button:has-text("Continue with Email")',
+        'button:has-text("Continue with email")',
+        'button:has-text("Log in with Email")',
+        'a:has-text("Log in")',
+        'a:has-text("Login")',
+    ]
+
+    PASSWORD_SELECTORS = [
+        'input[type="password"]',
+        'input[name="login[password]"]',
+        "#login_password",
+        'input[autocomplete="current-password"]',
+        'input[aria-label*="password" i]',
+        'input[placeholder*="password" i]',
+    ]
+
+    SUBMIT_SELECTORS = [
+        'button[type="submit"]',
+        'button:has-text("Continue")',
+        'button:has-text("Next")',
+        'button:has-text("Log In")',
+        'button:has-text("Login")',
+        'button:has-text("Sign In")',
+    ]
+
+    BASE_DIR = Path(__file__).parent.parent
+
+    # ── Step 1: find email input ──────────────────────────────────
+    email_box, used = await _first_visible(page, EMAIL_SELECTORS, timeout=3000)
+
+    if email_box is None:
+        # Try clicking a button that reveals the email form
+        for sel in PRE_LOGIN_BTNS:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=1200):
+                    print(f"  Clicking pre-login button: {sel}")
+                    await btn.click()
+                    await page.wait_for_timeout(1500)
+                    break
+            except Exception:
+                pass
+        email_box, used = await _first_visible(page, EMAIL_SELECTORS, timeout=5000)
+
+    if email_box is None:
+        debug_html = BASE_DIR / "upwork_login_debug.html"
+        debug_png = BASE_DIR / "upwork_login_debug.png"
+        debug_html.write_text(await page.content(), encoding="utf-8")
+        await page.screenshot(path=str(debug_png), full_page=True)
+        print(
+            f"  [error] Could not find email input.\n"
+            f"  Debug files saved:\n    {debug_png}\n    {debug_html}",
+            file=sys.stderr,
         )
-        await email_input.fill(UPWORK_EMAIL)
-        await page.keyboard.press("Enter")
-        await page.wait_for_timeout(2000)
-    except Exception as e:
-        print(f"  [error] Could not find email input: {e}", file=sys.stderr)
         return False
 
-    # Step 2: password
-    try:
-        pw_input = await page.wait_for_selector(
-            'input[name="login[password]"], input[type="password"], #login_password',
-            timeout=8000,
+    print(f"  Found email input via: {used}")
+    await email_box.fill(UPWORK_EMAIL)
+
+    # Click Continue/Next after email
+    for sel in SUBMIT_SELECTORS:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=1200):
+                print(f"  Clicking after-email button: {sel}")
+                await btn.click()
+                await page.wait_for_timeout(1500)
+                break
+        except Exception:
+            pass
+
+    # ── Step 2: find password input ──────────────────────────────
+    pwd_box, used = await _first_visible(page, PASSWORD_SELECTORS, timeout=8000)
+
+    if pwd_box is None:
+        debug_html = BASE_DIR / "upwork_password_debug.html"
+        debug_png = BASE_DIR / "upwork_password_debug.png"
+        debug_html.write_text(await page.content(), encoding="utf-8")
+        await page.screenshot(path=str(debug_png), full_page=True)
+        print(
+            f"  [error] Could not find password input.\n"
+            f"  Debug files saved:\n    {debug_png}\n    {debug_html}",
+            file=sys.stderr,
         )
-        await pw_input.fill(UPWORK_PASSWORD)
-        await page.keyboard.press("Enter")
-        await page.wait_for_timeout(4000)
-    except Exception as e:
-        print(f"  [error] Could not find password input: {e}", file=sys.stderr)
         return False
 
-    # Check success
+    print(f"  Found password input via: {used}")
+    await pwd_box.fill(UPWORK_PASSWORD)
+
+    # Submit login
+    clicked = False
+    for sel in SUBMIT_SELECTORS:
+        try:
+            btn = page.locator(sel).first
+            if await btn.is_visible(timeout=1200):
+                print(f"  Clicking submit: {sel}")
+                await btn.click()
+                clicked = True
+                break
+        except Exception:
+            pass
+    if not clicked:
+        await pwd_box.press("Enter")
+
+    await page.wait_for_timeout(3000)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+
     current_url = page.url
-    if "login" in current_url:
-        print("  [warn] Still on login page — check credentials or 2FA", file=sys.stderr)
+    if "login" in current_url or "account-security" in current_url:
+        debug_png = BASE_DIR / "upwork_after_login_debug.png"
+        await page.screenshot(path=str(debug_png), full_page=True)
+        print(
+            f"  [warn] Still on login page after submit — 2FA or CAPTCHA?\n"
+            f"  Screenshot saved: {debug_png}",
+            file=sys.stderr,
+        )
         return False
 
     print(f"  Login succeeded (url: {current_url})")
@@ -182,7 +302,7 @@ async def scrape_all() -> list[dict]:
     all_jobs: dict[str, dict] = {}
 
     async with async_playwright() as pw:
-        browser = await pw.chromium.launch(headless=True)
+        browser = await pw.chromium.launch(headless=False)  # False = ブラウザ画面が見えるﾈ2FA対応）
 
         # Restore session if available
         storage_state = str(AUTH_STATE_FILE) if AUTH_STATE_FILE.exists() else None
@@ -201,15 +321,13 @@ async def scrape_all() -> list[dict]:
         await page.goto("https://www.upwork.com/nx/find-work/", wait_until="domcontentloaded", timeout=20000)
         await page.wait_for_timeout(2000)
 
-        if "login" in page.url or "signup" in page.url:
+        if "login" in page.url or "signup" in page.url or "account-security" in page.url:
             print("Session expired or no saved session — logging in...")
-            await page.goto("https://www.upwork.com/login", wait_until="domcontentloaded", timeout=20000)
             success = await _login(page)
             if not success:
                 await browser.close()
                 raise RuntimeError(
-                    "Login failed. If you have 2FA enabled, run with headless=False "
-                    "to complete it manually, then re-run."
+                    "Login failed. ブラウザのスクリーンショットを確認してください: upwork_login_debug.png"
                 )
             # Save new auth state
             await context.storage_state(path=str(AUTH_STATE_FILE))
