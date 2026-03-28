@@ -2,14 +2,13 @@
 Upwork Job Scraper - main orchestrator.
 
 Flow:
-  1. Scrape Upwork (Playwright + real Chrome, session reuse)
+  1. Read unread Upwork alert emails from Gmail (IMAP)
   2. Filter out already-seen jobs (SQLite dedup)
   3. Score each new job (rule-based)
   4. Generate proposal drafts for top jobs (DeepSeek API)
   5. Save to DB
   6. Send Discord notification with top jobs
 """
-import asyncio
 import sys
 from datetime import datetime
 
@@ -17,44 +16,39 @@ from . import db, notifier, proposal, scorer, scraper
 from .config import MIN_SCORE_TO_NOTIFY, TOP_JOBS_TO_NOTIFY
 
 
-def run():
+def run() -> None:
     print(f"\n{'='*60}")
     print(f"  Upwork Job Scraper  -  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print(f"{'='*60}\n")
 
     db.init_db()
 
-    print("[1/5] Scraping Upwork...")
+    print("[1/5] Reading Upwork alert emails from Gmail...")
     try:
-        raw_jobs = asyncio.run(scraper.scrape_all())
+        raw_jobs = scraper.scrape_all()
     except RuntimeError as e:
         print(f"\n[FATAL] {e}", file=sys.stderr)
         sys.exit(1)
 
     total = len(raw_jobs)
-    print(f"  Total jobs scraped: {total}")
+    print(f"  Total jobs found: {total}")
 
     if total == 0:
-        print(
-            "\n[FATAL] 0件取得。考えられる原因:\n"
-            "  1. セッション切れ → .upwork_auth_state.json を削除して再実行\n"
-            "  2. Upworkのページ構造変更 → scraper.py のセレクタ更新が必要\n"
-            "  3. ネットワークエラー → 接続を確認してください",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        print("\n今日は新しい案件メールがありません。")
+        notifier.send_daily_report([])
+        return
 
     print("\n[2/5] Filtering duplicates...")
     new_jobs = [j for j in raw_jobs if not db.is_seen(j["id"])]
     print(f"  New jobs: {len(new_jobs)}  (skipped {total - len(new_jobs)} already seen)")
 
     if not new_jobs:
-        print("\n今日は新しい案件がありません。また明日実行してください。")
+        print("\n新規案件なし（全件DB済）。")
         notifier.send_daily_report([])
         return
 
     print("\n[3/5] Scoring jobs...")
-    scored = []
+    scored: list[tuple[int, dict]] = []
     for job in new_jobs:
         score, reasons = scorer.score_job(job)
         job["score"] = score
